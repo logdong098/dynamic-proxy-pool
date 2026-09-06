@@ -185,6 +185,8 @@ class ProxyChecker:
                 clean_level=clean_level,
                 max_fail_count=settings.MAX_FAIL_COUNT
             )
+            if not is_alive:
+                await storage.delete_endpoint(proxy.ip, proxy.port, reason="connectivity_or_auth_failed")
         return is_alive
 
     async def check_batch(self, proxies: list[ProxyItem]) -> dict:

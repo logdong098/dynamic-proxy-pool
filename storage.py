@@ -65,6 +65,18 @@ class ProxyStorage:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_active ON proxies(is_active);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_clean_level ON proxies(clean_level);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_ip_type ON proxies(ip_type);")
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS invalid_proxies (
+                    protocol TEXT NOT NULL,
+                    ip TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    username TEXT DEFAULT '',
+                    reason TEXT DEFAULT '',
+                    invalid_until TIMESTAMP DEFAULT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (protocol, ip, port, username)
+                );
+            """)
             await db.commit()
 
     def _row_to_item(self, row: Any) -> ProxyItem:
@@ -120,7 +132,7 @@ class ProxyStorage:
                 proxy.anonymity or "unknown",
                 proxy.score,
                 proxy.fail_count,
-                1 if proxy.is_active else 0,
+                0,
                 proxy.source,
                 proxy.ip_type or "unknown",
                 proxy.fraud_score or 0,
@@ -136,6 +148,14 @@ class ProxyStorage:
             return 0
         count = 0
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA busy_timeout=10000;")
+            await db.execute("DELETE FROM invalid_proxies WHERE invalid_until IS NOT NULL AND invalid_until <= datetime('now');")
+            blocked = {
+                (row[1], row[2])
+                async for row in await db.execute(
+                    "SELECT protocol, ip, port, username FROM invalid_proxies WHERE invalid_until IS NULL OR invalid_until > datetime('now')"
+                )
+            }
             sql = """
                 INSERT INTO proxies (
                     ip, port, protocol, username, password, country, country_name,
@@ -152,6 +172,8 @@ class ProxyStorage:
                     updated_at = datetime('now');
             """
             for p in proxies:
+                if (p.ip, p.port) in blocked:
+                    continue
                 await db.execute(sql, (
                     p.ip, p.port, p.protocol.lower(),
                     p.username, p.password,
@@ -161,7 +183,7 @@ class ProxyStorage:
                     p.anonymity or "unknown",
                     p.score,
                     p.fail_count,
-                    1 if p.is_active else 0,
+                    0,
                     p.source,
                     p.ip_type or "unknown",
                     p.fraud_score or 0,
@@ -172,6 +194,36 @@ class ProxyStorage:
                 count += 1
             await db.commit()
         return count
+
+    async def add_invalid(self, proxy: ProxyItem, reason: str = "failed", cooldown_hours: int = 24) -> None:
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("PRAGMA busy_timeout=10000;")
+                await db.execute(
+                    """INSERT INTO invalid_proxies(protocol, ip, port, username, reason, invalid_until)
+                       VALUES (?, ?, ?, ?, ?, datetime('now', ?))
+                       ON CONFLICT(protocol, ip, port, username) DO UPDATE SET
+                         reason=excluded.reason, invalid_until=excluded.invalid_until""",
+                    (proxy.protocol.lower(), proxy.ip, proxy.port, proxy.username or '', reason, f'+{cooldown_hours} hours'),
+                )
+                await db.commit()
+
+    async def delete_endpoint(self, ip: str, port: int, reason: str = "failed", cooldown_hours: int = 24) -> int:
+        """Blacklist and remove every protocol/auth variant of an endpoint."""
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("PRAGMA busy_timeout=10000;")
+                await db.execute(
+                    """INSERT INTO invalid_proxies(protocol, ip, port, username, reason, invalid_until)
+                       VALUES ('*', ?, ?, '', ?, datetime('now', ?))
+                       ON CONFLICT(protocol, ip, port, username) DO UPDATE SET
+                         reason=excluded.reason, invalid_until=excluded.invalid_until""",
+                    (ip, port, reason, f'+{cooldown_hours} hours'),
+                )
+                cursor = await db.execute("DELETE FROM proxies WHERE ip=? AND port=?", (ip, port))
+                deleted = cursor.rowcount
+                await db.commit()
+                return deleted
 
     async def get_proxy(
         self,
@@ -346,12 +398,25 @@ class ProxyStorage:
                 await db.commit()
 
     async def prune_dead(self, max_fail_count: int = 5) -> int:
-        sql = "DELETE FROM proxies WHERE fail_count >= ? OR score <= 0;"
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(sql, (max_fail_count,))
-            deleted = cursor.rowcount
-            await db.commit()
-            return deleted
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("PRAGMA busy_timeout=10000;")
+                rows = await db.execute_fetchall(
+                    "SELECT protocol, ip, port, username FROM proxies WHERE fail_count >= ? OR score <= 0",
+                    (max_fail_count,),
+                )
+                for protocol, ip, port, username in rows:
+                    await db.execute(
+                        """INSERT INTO invalid_proxies(protocol, ip, port, username, reason, invalid_until)
+                           VALUES (?, ?, ?, ?, 'health_check_failed', datetime('now', '+24 hours'))
+                           ON CONFLICT(protocol, ip, port, username) DO UPDATE SET
+                             reason=excluded.reason, invalid_until=excluded.invalid_until""",
+                        (protocol, ip, port, username or ''),
+                    )
+                cursor = await db.execute("DELETE FROM proxies WHERE fail_count >= ? OR score <= 0;", (max_fail_count,))
+                deleted = cursor.rowcount
+                await db.commit()
+                return deleted
 
     async def get_stats(self) -> StatsResponse:
         async with aiosqlite.connect(self.db_path) as db:
