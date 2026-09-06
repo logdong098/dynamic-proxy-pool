@@ -4,7 +4,7 @@ import csv
 import io
 import base64
 from typing import List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from bs4 import BeautifulSoup
 from models import ProxyItem
 
@@ -82,11 +82,40 @@ def parse_shadowsocks_url(url: str, source: str = "text") -> Optional[ProxyItem]
     return None
 
 
+def parse_telegram_socks_url(url: str, source: str = "text") -> Optional[ProxyItem]:
+    """Parse tg://socks and https://t.me/socks Telegram proxy links."""
+    try:
+        parsed = urlparse(url.strip())
+        is_tg = parsed.scheme.lower() == "tg" and parsed.netloc.lower() == "socks"
+        is_web = parsed.scheme.lower() == "https" and parsed.netloc.lower() == "t.me" and parsed.path.lower() == "/socks"
+        if not (is_tg or is_web):
+            return None
+        values = parse_qs(parsed.query, keep_blank_values=True)
+        ip = (values.get("server") or [""])[0].strip()
+        port = (values.get("port") or [""])[0].strip()
+        if not re.fullmatch(IPV4_REGEX, ip) or not re.fullmatch(PORT_REGEX, port):
+            return None
+        return ProxyItem(
+            ip=ip,
+            port=int(port),
+            protocol="socks5",
+            username=(values.get("user") or [None])[0],
+            password=(values.get("pass") or [None])[0],
+            source=source,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_proxy_line(line: str, default_protocol: str = "http", source: str = "text") -> Optional[ProxyItem]:
     """Parse a single text line into a ProxyItem."""
     line = line.strip()
     if not line or line.startswith("#") or line.startswith("//"):
         return None
+
+    telegram_item = parse_telegram_socks_url(line, source=source)
+    if telegram_item:
+        return telegram_item
 
     # Check shadowsocks format
     if line.lower().startswith("ss://"):
