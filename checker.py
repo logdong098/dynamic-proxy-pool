@@ -123,7 +123,12 @@ class ProxyChecker:
             if not is_alive:
                 return False, None, None, None, "unknown", 0, False, "D"
 
-            # 2. IP Purity & Risk Evaluation for live proxies
+            # 2. Optional IP purity/risk evaluation. Fast mode deliberately
+            # skips these extra external requests during the initial purge;
+            # reachability above remains mandatory for a proxy to be alive.
+            if settings.FAST_CHECK:
+                return True, latency_ms, country, anonymity, "unknown", 0, False, "C"
+
             test_ip = egress_ip or proxy.ip
             ip_type, is_known_proxy, base_score = await self._resolve_ip_type(test_ip)
             google_clean = await self._check_google_clean(proxy_url)
@@ -152,7 +157,15 @@ class ProxyChecker:
 
     async def validate_and_update(self, proxy: ProxyItem) -> bool:
         """Runs check on single proxy and updates database with full metrics."""
-        is_alive, latency, country, anonymity, ip_type, fraud_score, google_clean, clean_level = await self.check_proxy(proxy)
+        try:
+            is_alive, latency, country, anonymity, ip_type, fraud_score, google_clean, clean_level = await asyncio.wait_for(
+                self.check_proxy(proxy), timeout=self.timeout + 2
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Proxy check timed out: %s:%s", proxy.ip, proxy.port)
+            is_alive, latency, country, anonymity, ip_type, fraud_score, google_clean, clean_level = (
+                False, None, None, None, "unknown", 0, False, "D"
+            )
         if proxy.id:
             await storage.update_check_result(
                 proxy_id=proxy.id,

@@ -62,6 +62,17 @@ def format_proxy_message(proxy) -> str:
     return msg
 
 
+async def reply_html(update: Update, text: str, reply_markup=None):
+    """Reply from either a normal message or an inline-button callback."""
+    target = update.message
+    if target is None and update.callback_query is not None:
+        target = update.callback_query.message
+    if target is None:
+        logger.warning("Telegram update has no reply target")
+        return
+    await target.reply_html(text, reply_markup=reply_markup)
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for /start."""
     keyboard = [
@@ -95,14 +106,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <code>/list</code> 查看各国家可用节点及纯净度分布\n"
         "• <code>/stats</code> 查看代理池健康状态与纯净度统计\n"
     )
-    await update.message.reply_html(text, reply_markup=reply_markup)
+    await reply_html(update, text, reply_markup=reply_markup)
 
 
 async def get_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for /get [country] [clean/residential] [protocol]."""
     args = [a.lower() for a in (context.args or [])]
     if not args:
-        await update.message.reply_html(
+        await reply_html(
+            update,
             "⚠️ 请输入国家代码，例如：\n"
             "• <code>/get PH</code> (普通提取)\n"
             "• <code>/get PH clean</code> (仅提取纯净节点)\n"
@@ -135,17 +147,17 @@ async def get_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if protocol: filter_str += f" + {protocol.upper()}"
         if clean_only: filter_str += " + 仅纯净(Level A/B)"
         if ip_type: filter_str += f" + {ip_type}"
-        await update.message.reply_html(f"❌ 暂未找到符合条件的可用代理: <b>{filter_str}</b>")
+        await reply_html(update, f"❌ 暂未找到符合条件的可用代理: <b>{filter_str}</b>")
         return
 
-    await update.message.reply_html(format_proxy_message(proxy))
+    await reply_html(update, format_proxy_message(proxy))
 
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for /list."""
     stats = await storage.get_stats()
     if not stats.by_country:
-        await update.message.reply_html("ℹ️ 当前代理池暂无已测活的可用国家。")
+        await reply_html(update, "ℹ️ 当前代理池暂无已测活的可用国家。")
         return
 
     lines = [
@@ -158,7 +170,7 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"• {display}: <b>{count}</b> 个可用")
 
     lines.append("\n👉 发送 <code>/get &lt;代码&gt; clean</code> 提取纯净节点。")
-    await update.message.reply_html("\n".join(lines))
+    await reply_html(update, "\n".join(lines))
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -181,7 +193,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for proto, count in stats.by_protocol.items():
         lines.append(f"• <code>{proto.upper()}</code>: {count} 个")
 
-    await update.message.reply_html("\n".join(lines))
+    await reply_html(update, "\n".join(lines))
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):

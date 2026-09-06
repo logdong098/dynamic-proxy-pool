@@ -1,4 +1,5 @@
 import os
+import asyncio
 import aiosqlite
 from datetime import datetime
 from typing import List, Optional, Tuple, Dict, Any
@@ -10,6 +11,7 @@ from config import settings
 class ProxyStorage:
     def __init__(self, db_path: str = None):
         self.db_path = db_path or settings.DB_PATH
+        self._write_lock = asyncio.Lock()
         os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
 
     async def init_db(self):
@@ -299,41 +301,43 @@ class ProxyStorage:
         clean_level: Optional[str] = None,
         max_fail_count: int = 3
     ):
-        async with aiosqlite.connect(self.db_path) as db:
-            if is_alive:
-                sql = """
-                    UPDATE proxies SET
-                        is_active = 1,
-                        fail_count = 0,
-                        latency = coalesce(?, latency),
-                        score = min(100, score + 10),
-                        country = CASE WHEN (country = 'UNKNOWN' OR country IS NULL) AND ? IS NOT NULL THEN ? ELSE country END,
-                        anonymity = coalesce(?, anonymity),
-                        ip_type = coalesce(?, ip_type),
-                        fraud_score = coalesce(?, fraud_score),
-                        google_clean = CASE WHEN ? IS NOT NULL THEN ? ELSE google_clean END,
-                        clean_level = coalesce(?, clean_level),
-                        last_checked = datetime('now'),
-                        updated_at = datetime('now')
-                    WHERE id = ?;
-                """
-                g_val = 1 if google_clean is True else (0 if google_clean is False else None)
-                await db.execute(sql, (
-                    latency, country, country, anonymity,
-                    ip_type, fraud_score, g_val, g_val, clean_level, proxy_id
-                ))
-            else:
-                sql = f"""
-                    UPDATE proxies SET
-                        fail_count = fail_count + 1,
-                        score = max(0, score - 30),
-                        is_active = CASE WHEN fail_count + 1 >= {max_fail_count} THEN 0 ELSE is_active END,
-                        last_checked = datetime('now'),
-                        updated_at = datetime('now')
-                    WHERE id = ?;
-                """
-                await db.execute(sql, (proxy_id,))
-            await db.commit()
+        async with self._write_lock:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("PRAGMA busy_timeout=10000;")
+                if is_alive:
+                    sql = """
+                        UPDATE proxies SET
+                            is_active = 1,
+                            fail_count = 0,
+                            latency = coalesce(?, latency),
+                            score = min(100, score + 10),
+                            country = CASE WHEN (country = 'UNKNOWN' OR country IS NULL) AND ? IS NOT NULL THEN ? ELSE country END,
+                            anonymity = coalesce(?, anonymity),
+                            ip_type = coalesce(?, ip_type),
+                            fraud_score = coalesce(?, fraud_score),
+                            google_clean = CASE WHEN ? IS NOT NULL THEN ? ELSE google_clean END,
+                            clean_level = coalesce(?, clean_level),
+                            last_checked = datetime('now'),
+                            updated_at = datetime('now')
+                        WHERE id = ?;
+                    """
+                    g_val = 1 if google_clean is True else (0 if google_clean is False else None)
+                    await db.execute(sql, (
+                        latency, country, country, anonymity,
+                        ip_type, fraud_score, g_val, g_val, clean_level, proxy_id
+                    ))
+                else:
+                    sql = f"""
+                        UPDATE proxies SET
+                            fail_count = fail_count + 1,
+                            score = max(0, score - 30),
+                            is_active = CASE WHEN fail_count + 1 >= {max_fail_count} THEN 0 ELSE is_active END,
+                            last_checked = datetime('now'),
+                            updated_at = datetime('now')
+                        WHERE id = ?;
+                    """
+                    await db.execute(sql, (proxy_id,))
+                await db.commit()
 
     async def prune_dead(self, max_fail_count: int = 5) -> int:
         sql = "DELETE FROM proxies WHERE fail_count >= ? OR score <= 0;"

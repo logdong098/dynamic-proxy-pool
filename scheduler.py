@@ -14,6 +14,7 @@ class TaskScheduler:
     def __init__(self):
         self.is_running = False
         self._tasks = []
+        self._check_lock = asyncio.Lock()
 
     async def scrape_job(self):
         """Periodically scrape websites and public sources."""
@@ -48,24 +49,26 @@ class TaskScheduler:
             asyncio.create_task(checker.check_batch(all_new[:50]))
 
     async def check_job(self):
-        """Periodically health check existing proxies in pool."""
-        logger.info("Scheduler: Starting proxy health check cycle...")
-        try:
-            proxies_to_check = await storage.get_proxies_for_check(limit=100)
-            if proxies_to_check:
-                logger.info(f"Scheduler: Health checking {len(proxies_to_check)} proxies...")
-                res = await checker.check_batch(proxies_to_check)
-                logger.info(f"Scheduler: Health check completed: {res['alive']} alive, {res['dead']} dead.")
-            else:
-                logger.info("Scheduler: No proxies currently pending health check.")
+        """Health-check one bounded batch without overlapping SQLite writes."""
+        if self._check_lock.locked():
+            logger.warning("Scheduler: Previous health check still running; skipping overlap.")
+            return
+        async with self._check_lock:
+            logger.info("Scheduler: Starting proxy health check cycle...")
+            try:
+                proxies_to_check = await storage.get_proxies_for_check(limit=settings.CHECK_BATCH_SIZE)
+                if proxies_to_check:
+                    logger.info(f"Scheduler: Health checking {len(proxies_to_check)} proxies...")
+                    res = await checker.check_batch(proxies_to_check)
+                    logger.info(f"Scheduler: Health check completed: {res['alive']} alive, {res['dead']} dead.")
+                else:
+                    logger.info("Scheduler: No proxies currently pending health check.")
 
-            # Prune dead proxies
-            pruned = await storage.prune_dead(max_fail_count=settings.MAX_FAIL_COUNT + 2)
-            if pruned > 0:
-                logger.info(f"Scheduler: Pruned {pruned} continuously failing proxies.")
-
-        except Exception as e:
-            logger.error(f"Scheduler health check error: {e}")
+                pruned = await storage.prune_dead(max_fail_count=settings.MAX_FAIL_COUNT)
+                if pruned > 0:
+                    logger.info(f"Scheduler: Pruned {pruned} continuously failing proxies.")
+            except Exception as e:
+                logger.error(f"Scheduler health check error: {e}")
 
     async def _scrape_loop(self):
         # Run once immediately on startup
