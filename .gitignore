@@ -1,0 +1,28 @@
+# Secrets and local configuration
+.env
+*.session
+*.session-journal
+
+# Runtime data
+data/*
+!data/.gitkeep
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Logs and local build output
+*.log
+dist/
+build/
+*.egg-info/
