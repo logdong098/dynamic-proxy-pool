@@ -23,6 +23,11 @@ class ProxyChecker:
         self.backup_url = backup_url or settings.BACKUP_TARGET_URL
         self.timeout = timeout or settings.CHECK_TIMEOUT
         self.semaphore = asyncio.Semaphore(concurrency or settings.CHECK_CONCURRENCY)
+        self.fast_check: Optional[bool] = None
+
+    def set_fast_check(self, enabled: bool) -> None:
+        """Override fast mode for the current scheduler cycle."""
+        self.fast_check = enabled
 
     async def _check_google_clean(self, proxy_url: str) -> bool:
         """Test whether proxy can access Google without captcha challenge."""
@@ -126,7 +131,8 @@ class ProxyChecker:
             # 2. Optional IP purity/risk evaluation. Fast mode deliberately
             # skips these extra external requests during the initial purge;
             # reachability above remains mandatory for a proxy to be alive.
-            if settings.FAST_CHECK:
+            fast_check = settings.FAST_CHECK if self.fast_check is None else self.fast_check
+            if fast_check:
                 return True, latency_ms, country, anonymity, "unknown", 0, False, "C"
 
             test_ip = egress_ip or proxy.ip

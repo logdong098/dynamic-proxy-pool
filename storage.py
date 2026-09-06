@@ -269,6 +269,12 @@ class ProxyStorage:
                     results.append(self._row_to_item(row))
         return results
 
+    async def count_unchecked(self) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM proxies WHERE last_checked IS NULL") as cursor:
+                row = await cursor.fetchone()
+                return int(row[0] or 0)
+
     async def get_proxies_for_check(self, limit: int = 100) -> List[ProxyItem]:
         sql = """
             SELECT id, ip, port, protocol, username, password, country, country_name,

@@ -56,6 +56,15 @@ class TaskScheduler:
         async with self._check_lock:
             logger.info("Scheduler: Starting proxy health check cycle...")
             try:
+                unchecked = await storage.count_unchecked()
+                fast_mode = unchecked > settings.FAST_CHECK_THRESHOLD
+                checker.set_fast_check(fast_mode)
+                logger.info(
+                    "Scheduler: unchecked=%d threshold=%d mode=%s",
+                    unchecked,
+                    settings.FAST_CHECK_THRESHOLD,
+                    "FAST" if fast_mode else "NORMAL",
+                )
                 proxies_to_check = await storage.get_proxies_for_check(limit=settings.CHECK_BATCH_SIZE)
                 if proxies_to_check:
                     logger.info(f"Scheduler: Health checking {len(proxies_to_check)} proxies...")
@@ -64,7 +73,7 @@ class TaskScheduler:
                 else:
                     logger.info("Scheduler: No proxies currently pending health check.")
 
-                pruned = await storage.prune_dead(max_fail_count=settings.MAX_FAIL_COUNT)
+                pruned = await storage.prune_dead(max_fail_count=settings.MAX_FAIL_COUNT + 2)
                 if pruned > 0:
                     logger.info(f"Scheduler: Pruned {pruned} continuously failing proxies.")
             except Exception as e:

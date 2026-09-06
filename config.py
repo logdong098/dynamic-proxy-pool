@@ -33,12 +33,13 @@ class Settings(BaseSettings):
     TG_BOT_TOKEN: str = Field(default="", description="Telegram Query Bot Token from @BotFather")
 
     # Checker settings
-    CHECK_CONCURRENCY: int = 100
-    CHECK_TIMEOUT: float = 4.0
-    CHECK_BATCH_SIZE: int = 2000
-    CHECK_INTERVAL_MINUTES: int = 1
-    FAST_CHECK: bool = True
-    MAX_FAIL_COUNT: int = 2
+    CHECK_CONCURRENCY: int = 50
+    CHECK_TIMEOUT: float = 8.0
+    CHECK_BATCH_SIZE: int = 100
+    CHECK_INTERVAL_MINUTES: int = 10
+    FAST_CHECK: bool = False
+    FAST_CHECK_THRESHOLD: int = 1000
+    MAX_FAIL_COUNT: int = 3
     CHECK_TARGET_URL: str = "https://cloudflare.com/cdn-cgi/trace"
     BACKUP_TARGET_URL: str = "http://httpbin.org/ip"
 
