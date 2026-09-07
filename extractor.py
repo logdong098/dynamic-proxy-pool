@@ -18,19 +18,24 @@ URI_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-# Pattern 2: IP:PORT:USER:PASS
+# Pattern 2: IP:PORT:USER:PASS (supports :, ,, |, or space delimiters)
 IP_PORT_USER_PASS_PATTERN = re.compile(
-    rf"^(?P<ip>{IPV4_REGEX})[:\s]+(?P<port>{PORT_REGEX})[:\s]+(?P<user>[^:\s]+)[:\s]+(?P<pass>[^\s]+)$"
+    rf"^(?P<ip>{IPV4_REGEX})[:,|\s]+(?P<port>{PORT_REGEX})[:,|\s]+(?P<user>[^:,|\s]+)[:,|\s]+(?P<pass>[^\s,]+)$"
 )
 
-# Pattern 3: USER:PASS@IP:PORT
+# Pattern 3: IP:PORT@USER:PASS
+IP_PORT_AT_USER_PASS_PATTERN = re.compile(
+    rf"^(?P<ip>{IPV4_REGEX})[:,|\s]+(?P<port>{PORT_REGEX})@(?P<user>[^:@\s]+)[:\s]+(?P<pass>[^\s]+)$"
+)
+
+# Pattern 4: USER:PASS@IP:PORT
 USER_PASS_IP_PORT_PATTERN = re.compile(
-    rf"^(?P<user>[^:@\s]+):(?P<pass>[^@\s]+)@(?P<ip>{IPV4_REGEX})[:\s]+(?P<port>{PORT_REGEX})$"
+    rf"^(?P<user>[^:@\s]+):(?P<pass>[^@\s]+)@(?P<ip>{IPV4_REGEX})[:,|\s]+(?P<port>{PORT_REGEX})$"
 )
 
-# Pattern 4: IP:PORT (optional protocol at end or beginning)
+# Pattern 5: IP:PORT (optional protocol at end or beginning, supports :, ,, |, or space)
 IP_PORT_PATTERN = re.compile(
-    rf"(?P<ip>{IPV4_REGEX})[:\s]+(?P<port>{PORT_REGEX})"
+    rf"(?P<ip>{IPV4_REGEX})[:,|\s]+(?P<port>{PORT_REGEX})"
 )
 
 
@@ -113,6 +118,13 @@ def parse_proxy_line(line: str, default_protocol: str = "http", source: str = "t
     if not line or line.startswith("#") or line.startswith("//"):
         return None
 
+    if '"' in line or "'" in line:
+        line = line.replace('"', '').replace("'", '').strip()
+
+    # Remove trailing comments if not a URL
+    if not line.lower().startswith(("http://", "https://", "socks5://", "socks4://", "ss://", "tg://")):
+        line = re.sub(r"\s+[#;].*$", "", line).strip()
+
     telegram_item = parse_telegram_socks_url(line, source=source)
     if telegram_item:
         return telegram_item
@@ -140,6 +152,19 @@ def parse_proxy_line(line: str, default_protocol: str = "http", source: str = "t
     match = IP_PORT_USER_PASS_PATTERN.match(line)
     if match:
         data = match.groupdict()
+        return ProxyItem(
+            ip=data["ip"],
+            port=int(data["port"]),
+            protocol=default_protocol.lower(),
+            username=data["user"],
+            password=data["pass"],
+            source=source
+        )
+
+    # Check IP:PORT@USER:PASS
+    match_at = IP_PORT_AT_USER_PASS_PATTERN.match(line)
+    if match_at:
+        data = match_at.groupdict()
         return ProxyItem(
             ip=data["ip"],
             port=int(data["port"]),

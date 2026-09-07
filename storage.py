@@ -11,8 +11,20 @@ from config import settings
 class ProxyStorage:
     def __init__(self, db_path: str = None):
         self.db_path = db_path or settings.DB_PATH
-        self._write_lock = asyncio.Lock()
+        self._lock_obj: Optional[asyncio.Lock] = None
+        self._lock_loop = None
         os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
+
+    @property
+    def _write_lock(self) -> asyncio.Lock:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if self._lock_obj is None or self._lock_loop is not loop:
+            self._lock_obj = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock_obj
 
     async def init_db(self):
         async with aiosqlite.connect(self.db_path) as db:
@@ -119,6 +131,7 @@ class ProxyStorage:
                 country_name = coalesce(excluded.country_name, proxies.country_name),
                 ip_type = CASE WHEN proxies.ip_type = 'unknown' AND excluded.ip_type != 'unknown' THEN excluded.ip_type ELSE proxies.ip_type END,
                 clean_level = CASE WHEN excluded.clean_level != 'C' THEN excluded.clean_level ELSE proxies.clean_level END,
+                is_active = CASE WHEN excluded.is_active = 1 THEN 1 ELSE proxies.is_active END,
                 source = excluded.source,
                 updated_at = datetime('now');
         """
@@ -132,7 +145,7 @@ class ProxyStorage:
                 proxy.anonymity or "unknown",
                 proxy.score,
                 proxy.fail_count,
-                0,
+                1 if proxy.is_active else 0,
                 proxy.source,
                 proxy.ip_type or "unknown",
                 proxy.fraud_score or 0,
@@ -143,19 +156,27 @@ class ProxyStorage:
             await db.commit()
             return True
 
-    async def upsert_many(self, proxies: List[ProxyItem]) -> int:
+    async def upsert_many(self, proxies: List[ProxyItem], check_blocked: bool = True) -> int:
         if not proxies:
             return 0
         count = 0
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("PRAGMA busy_timeout=10000;")
             await db.execute("DELETE FROM invalid_proxies WHERE invalid_until IS NOT NULL AND invalid_until <= datetime('now');")
-            blocked = {
-                (row[1], row[2])
-                async for row in await db.execute(
-                    "SELECT protocol, ip, port, username FROM invalid_proxies WHERE invalid_until IS NULL OR invalid_until > datetime('now')"
-                )
-            }
+            if not check_blocked:
+                for p in proxies:
+                    await db.execute(
+                        "DELETE FROM invalid_proxies WHERE ip = ? AND (port = ? OR protocol = '*');",
+                        (p.ip, p.port)
+                    )
+                blocked = set()
+            else:
+                blocked = {
+                    (row[1], row[2])
+                    async for row in await db.execute(
+                        "SELECT protocol, ip, port, username FROM invalid_proxies WHERE invalid_until IS NULL OR invalid_until > datetime('now')"
+                    )
+                }
             sql = """
                 INSERT INTO proxies (
                     ip, port, protocol, username, password, country, country_name,
@@ -168,6 +189,8 @@ class ProxyStorage:
                     password = coalesce(excluded.password, proxies.password),
                     country = CASE WHEN proxies.country = 'UNKNOWN' AND excluded.country != 'UNKNOWN' THEN excluded.country ELSE proxies.country END,
                     ip_type = CASE WHEN proxies.ip_type = 'unknown' AND excluded.ip_type != 'unknown' THEN excluded.ip_type ELSE proxies.ip_type END,
+                    clean_level = CASE WHEN excluded.clean_level != 'C' THEN excluded.clean_level ELSE proxies.clean_level END,
+                    is_active = CASE WHEN excluded.is_active = 1 THEN 1 ELSE proxies.is_active END,
                     source = excluded.source,
                     updated_at = datetime('now');
             """
@@ -183,7 +206,7 @@ class ProxyStorage:
                     p.anonymity or "unknown",
                     p.score,
                     p.fail_count,
-                    0,
+                    1 if p.is_active else 0,
                     p.source,
                     p.ip_type or "unknown",
                     p.fraud_score or 0,
@@ -231,6 +254,7 @@ class ProxyStorage:
         protocol: Optional[str] = None,
         min_score: int = 50,
         clean_only: bool = False,
+        clean_level: Optional[str] = None,
         ip_type: Optional[str] = None
     ) -> Optional[ProxyItem]:
         """Fetch one best active proxy with optional purity filtering."""
@@ -243,7 +267,10 @@ class ProxyStorage:
         if protocol and protocol.lower() != "all":
             conditions.append("protocol = ?")
             params.append(protocol.lower())
-        if clean_only:
+        if clean_level and clean_level.upper() != "ALL":
+            conditions.append("clean_level = ?")
+            params.append(clean_level.upper())
+        elif clean_only:
             conditions.append("clean_level IN ('A', 'B')")
         if ip_type and ip_type.lower() != "all":
             conditions.append("ip_type = ?")
@@ -294,7 +321,10 @@ class ProxyStorage:
             conditions.append("latency <= ?")
             params.append(query.max_latency)
 
-        if query.clean_only:
+        if query.clean_level and query.clean_level.upper() != "ALL":
+            conditions.append("clean_level = ?")
+            params.append(query.clean_level.upper())
+        elif query.clean_only:
             conditions.append("clean_level IN ('A', 'B')")
 
         if query.ip_type and query.ip_type.lower() != "all":
@@ -320,6 +350,35 @@ class ProxyStorage:
                 async for row in cursor:
                     results.append(self._row_to_item(row))
         return results
+
+    async def get_by_id(self, proxy_id: int) -> Optional[ProxyItem]:
+        sql = """
+            SELECT id, ip, port, protocol, username, password, country, country_name,
+                   latency, anonymity, score, fail_count, is_active, source,
+                   ip_type, fraud_score, google_clean, clean_level,
+                   last_checked, created_at, updated_at
+            FROM proxies
+            WHERE id = ?;
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(sql, (proxy_id,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return self._row_to_item(row)
+        return None
+
+    async def get_id_by_endpoint(self, ip: str, port: int, protocol: str = "http", username: Optional[str] = None) -> Optional[int]:
+        sql = """
+            SELECT id FROM proxies
+            WHERE ip = ? AND port = ? AND protocol = ? AND coalesce(username, '') = coalesce(?, '')
+            LIMIT 1;
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(sql, (ip, port, protocol.lower(), username or "")) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return int(row[0])
+        return None
 
     async def count_unchecked(self) -> int:
         async with aiosqlite.connect(self.db_path) as db:

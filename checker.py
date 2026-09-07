@@ -172,9 +172,12 @@ class ProxyChecker:
             is_alive, latency, country, anonymity, ip_type, fraud_score, google_clean, clean_level = (
                 False, None, None, None, "unknown", 0, False, "D"
             )
-        if proxy.id:
+        proxy_id = proxy.id
+        if not proxy_id:
+            proxy_id = await storage.get_id_by_endpoint(proxy.ip, proxy.port, proxy.protocol, proxy.username)
+        if proxy_id:
             await storage.update_check_result(
-                proxy_id=proxy.id,
+                proxy_id=proxy_id,
                 is_alive=is_alive,
                 latency=latency,
                 country=country,
