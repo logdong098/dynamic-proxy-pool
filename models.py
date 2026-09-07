@@ -64,6 +64,7 @@ class ProxyQuery(BaseModel):
     min_score: Optional[int] = 50
     is_active: Optional[bool] = True
     clean_only: Optional[bool] = None
+    clean_level: Optional[str] = None
     ip_type: Optional[str] = None
     limit: int = 20
     offset: int = 0

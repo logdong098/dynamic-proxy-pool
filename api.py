@@ -1227,6 +1227,48 @@ socks5://proxyuser:proxypwd@123.45.67.89:1080
             return `<span class="latency-indicator latency-slow" title="延迟较高"><span class="latency-dot"></span>${lat} ms</span>`;
         }
 
+        function formatProxyHost(p) {
+            const host = String(p.ip || '');
+            return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+        }
+
+        function formatProxyRemark(p) {
+            return String(p.source || p.country || '').replace(/[{}\\[\\]]/g, '').trim();
+        }
+
+        function formatProxyRefreshUrl(p) {
+            return p.refresh_url ? `[${p.refresh_url}]` : '';
+        }
+
+        function formatProxyCopy(p, format) {
+            const host = formatProxyHost(p);
+            const endpoint = `${host}:${p.port}`;
+            const remark = `{${formatProxyRemark(p)}}`;
+            const refresh = formatProxyRefreshUrl(p);
+            const hasAuth = p.username && p.password;
+            const scheme = (p.protocol || 'http').toLowerCase();
+            if (format === 'pipe') {
+                return hasAuth
+                    ? `${scheme}://${endpoint}:${p.username}:${p.password}${remark}`
+                    : `${scheme}://${endpoint}${remark}`;
+            }
+            if (format === 'url') {
+                const scheme = (p.protocol || 'http').toLowerCase();
+                return hasAuth
+                    ? `${scheme}://${p.username}:${p.password}@${endpoint}${refresh}${remark}`
+                    : `${scheme}://${endpoint}${refresh}${remark}`;
+            }
+            if (format === 'socks-auth') {
+                return hasAuth
+                    ? `socks5://${p.username}:${p.password}@${endpoint}${refresh}${remark}`
+                    : `socks5://${endpoint}${refresh}${remark}`;
+            }
+            if (format === 'http-refresh') {
+                return `http://${endpoint}${refresh}${remark}`;
+            }
+            return `${endpoint}${remark}`;
+        }
+
         async function loadProxies(page = 1) {
             currentPage = page;
             const country = document.getElementById('filter-country').value.trim();
@@ -1274,12 +1316,9 @@ socks5://proxyuser:proxypwd@123.45.67.89:1080
 
                 tbody.innerHTML = list.map((p, idx) => {
                     const meta = getCountryMeta(p.country);
-                    const fullUrl = (p.username && p.password)
-                        ? `${p.protocol}://${p.username}:${p.password}@${p.ip}:${p.port}`
-                        : `${p.protocol}://${p.ip}:${p.port}`;
-                    const pipeFormat = (p.username && p.password)
-                        ? `${p.ip}:${p.port}:${p.username}:${p.password}`
-                        : `${p.ip}:${p.port}`;
+                    const host = formatProxyHost(p);
+                    const fullUrl = formatProxyCopy(p, 'url');
+                    const pipeFormat = formatProxyCopy(p, 'pipe');
                     const curlCmd = `curl -x ${fullUrl} https://api.ipify.org`;
 
                     const badgeProto = p.protocol === 'socks5' ? 'badge-socks5' : (p.protocol === 'https' ? 'badge-https' : 'badge-http');
@@ -1294,7 +1333,7 @@ socks5://proxyuser:proxypwd@123.45.67.89:1080
                             </td>
                             <td><span class="badge badge-protocol ${badgeProto}">${p.protocol}</span></td>
                             <td>
-                                <span class="code-box cursor-pointer" onclick="copyText('${p.ip}:${p.port}', this)" title="点击复制 IP:Port">
+                                <span class="code-box cursor-pointer" onclick="copyText('${formatProxyCopy(p, 'plain')}', this)" title="复制 IP:Port{备注}">
                                     ${p.ip}:${p.port}
                                 </span>
                             </td>
@@ -1483,17 +1522,9 @@ socks5://proxyuser:proxypwd@123.45.67.89:1080
 
             let text = '';
             if (format === 'url') {
-                text = currentLoadedList.map(p => {
-                    return (p.username && p.password)
-                        ? `${p.protocol}://${p.username}:${p.password}@${p.ip}:${p.port}`
-                        : `${p.protocol}://${p.ip}:${p.port}`;
-                }).join('\n');
+                text = currentLoadedList.map(p => formatProxyCopy(p, 'url')).join('\\\\n');
             } else {
-                text = currentLoadedList.map(p => {
-                    return (p.username && p.password)
-                        ? `${p.ip}:${p.port}:${p.username}:${p.password}`
-                        : `${p.ip}:${p.port}`;
-                }).join('\n');
+                text = currentLoadedList.map(p => formatProxyCopy(p, 'pipe')).join('\\\\n');
             }
 
             copyText(text);

@@ -19,11 +19,11 @@ COPY . .
 RUN mkdir -p /app/data
 
 # Expose FastAPI port
-EXPOSE 8000
+EXPOSE 18081
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:8000/api/v1/stats || exit 1
+  CMD curl -f http://localhost:18081/api/v1/stats || exit 1
 
 # Launch main application
 CMD ["python", "main.py"]
