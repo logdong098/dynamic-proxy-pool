@@ -8,7 +8,7 @@ services:
     container_name: dynamic-proxy-pool
     restart: unless-stopped
     ports:
-      - "18081:18081"
+      - "127.0.0.1:18081:18081"
     volumes:
       # Persist SQLite database and Telegram userbot session across restarts
       - ./data:/app/data
